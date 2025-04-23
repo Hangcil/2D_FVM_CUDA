@@ -503,6 +503,55 @@ __global__ void set_ghost_cells_jet(vec5d *U, int Nx, int Ny, double width, doub
     }
 }
 
+
+__global__ void set_ghost_cells_jet800(vec5d *U, int Nx, int Ny, double width, double height, double t)
+{
+    int j = blockIdx.y * blockDim.y + threadIdx.y; // y-index
+    int i = blockIdx.x * blockDim.x + threadIdx.x; // x-index (interface)
+
+    if (i < Nx && j < Ny)
+    {
+        int idx = j * Nx + i;
+        if (j == 0)
+        {
+            U[idx] = U[idx + 2 * Nx];
+        }
+        else if (j == 1)
+        {
+            U[idx] = U[idx + Nx];
+        }
+        else if (j == Ny - 2)
+        {
+            U[idx] = U[idx - Nx];
+        }
+        else if (j == Ny - 1)
+        {
+            U[idx] = U[idx - 3 * Nx];
+        }
+
+        if (i == 0 || i == 1)
+        {
+            if (j >= 9 * Ny / 10)
+            {
+                U[idx] = vec5d(1.4, 1, 800, 0, 0);
+            }
+            else
+            {
+                U[idx] = {0.14, 1, 0, 0, 0};
+            }
+        }
+        else if (i == Nx - 2)
+        {
+            U[idx] = U[idx - 1];
+        }
+        else if (i == Nx - 1)
+        {
+            U[idx] = U[idx - 2];
+        }
+    }
+}
+
+
 __global__ void combineResults(vec5d *U1, vec5d *U2, int Nx, int Ny)
 {
     int j = blockIdx.y * blockDim.y + threadIdx.y; // y-index

@@ -8,6 +8,9 @@ set(CMAKE_CUDA_ARCHITECTURES 89) # Target Ada Lovelace (RTX 4060)
 # Specify the CUDA host compiler explicitly
 set(CMAKE_CUDA_HOST_COMPILER "C:/Program Files (x86)/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/<version>/bin/Hostx64/x64/cl.exe")
 
-add_executable(GRPRelaxation  "./src/basicFuns.h " "TestSimple.cu")
+aux_source_directory(./src MYSRC)
+add_executable(GRPRelaxation  "./src/basicFuns.h" "./src/wrappers.h" "TestSimple.cu")
+#add_executable(GRPRelaxation  ${MYSRC} "TestSimple.cu")
+include_directories("C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.8\\include")
 target_link_directories(GRPRelaxation PUBLIC CUDA::cudart)
 
