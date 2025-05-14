@@ -4,16 +4,22 @@
 #include <chrono>
 #include <fstream>
 #include <string>
+#include <algorithm>
+#include <cmath>
+#include <opencv2/opencv.hpp>
+#include <filesystem>
 #include "basicFuns.cuh"
 using std::ofstream;
 using std::string;
 using std::vector;
+namespace fs = std::filesystem;
 
 enum class ghostCellStrategy
 {
     outflow,
     reflective,
     jet,
+    jet800,
     doubleMach
 };
 
@@ -30,13 +36,11 @@ public:
     void setAlpha(double alpha);
     void setGamma(double gamma);
     void setGhostCellStrategy(ghostCellStrategy strategy);
-    void setRecordModel(bool on_off);
-    vector<vector<vector<vec5d>>> getAllTimeStages();
+    void setRecordModel(bool on_off, int gapPerFrame = 10, const string &recordDir = ".");
     vector<vector<vec5d>> solve();
     double getComputationTime_ms();
     int getTimeStagesCount();
     void writeFinalResultTo_txt(const string &dir);
-    void writeAllStagesTo_txt(const string &dir);
     void clear();
 
 protected:
@@ -52,9 +56,12 @@ protected:
     vector<double> __cTimes__;
     double __computationTime_ms__ = 0.0;
     int __timeStagesNum__ = 0;
+    int __gapPerFrame__ = 1;
+    string __recordDir__ = ".";
 
     vector<vector<vec5d>> flattened2vectorized(const vector<vec5d> &flattened);
     static void writeMatrixTo_txt(const string &dir, const vector<vector<vec5d>> &matrix, double cTime);
+    void writeStagesTo_png(const string &dir, const vector<vector<vec5d>> &data, int i);
 };
 
 RGRP_2D_CUDA::RGRP_2D_CUDA(const vector<vector<vec5d>> &U0)
@@ -137,14 +144,11 @@ void RGRP_2D_CUDA::setGhostCellStrategy(ghostCellStrategy strategy)
     __strategy__ = strategy;
 }
 
-void RGRP_2D_CUDA::setRecordModel(bool on_off)
+void RGRP_2D_CUDA::setRecordModel(bool on_off, int gapPerFrame, const string &recordDir)
 {
     __recordAllTimeStages__ = on_off;
-}
-
-vector<vector<vector<vec5d>>> RGRP_2D_CUDA::getAllTimeStages()
-{
-    return __allTimeStages__;
+    __gapPerFrame__ = gapPerFrame;
+    __recordDir__ = recordDir;
 }
 
 vector<vector<vec5d>> RGRP_2D_CUDA::solve()
@@ -186,8 +190,9 @@ vector<vector<vec5d>> RGRP_2D_CUDA::solve()
 
     double cTime = 0.0;
     __cTimes__.push_back(0.0);
-    __allTimeStages__.push_back(flattened2vectorized(__U0__));
     auto start = std::chrono::high_resolution_clock::now();
+    int iter = 0;
+    int iter_ = 0;
     while (cTime < __endTime__)
     {
         maxPropagtingSpeed<<<gridSize, blockSize>>>(u_dev, speed, __Nx__, __Ny__, __gamma__);
@@ -207,8 +212,6 @@ vector<vector<vec5d>> RGRP_2D_CUDA::solve()
         cudaDeviceSynchronize();
         rel_RP_posi_fix<<<gridSize, blockSize>>>(u_dev, u_slope_dev, u_lr_interface_dev, __Nx__, __Ny__, u_u_t_interface_dev, c_lr_interface_edited_dev, __gamma__);
         cudaDeviceSynchronize();
-        time_deris<<<gridSize, blockSize>>>(u_u_t_interface_dev, u_lr_interface_dev, u_slope_dev, __Nx__, __Ny__, __width__, c_lr_interface_edited_dev, __gamma__);
-        cudaDeviceSynchronize();
         forward_x_dir<<<gridSize, blockSize>>>(u_dev, u_u_t_interface_dev, __Nx__, __Ny__, __width__, dt, __gamma__);
         cudaDeviceSynchronize();
         rotate_and_flip_vertically<<<gridSize, blockSize>>>(u_dev, u_y_dev, __Nx__, __Ny__);
@@ -217,20 +220,19 @@ vector<vector<vec5d>> RGRP_2D_CUDA::solve()
         cudaDeviceSynchronize();
         rel_RP_posi_fix<<<gridSize_y, blockSize>>>(u_y_dev, u_slope_y_dev, u_lr_y_interface_dev, __Ny__, __Nx__, u_u_t_y_interface_dev, c_lr_interface_y_edited_dev, __gamma__);
         cudaDeviceSynchronize();
-        time_deris<<<gridSize_y, blockSize>>>(u_u_t_y_interface_dev, u_lr_y_interface_dev, u_slope_y_dev, __Ny__, __Nx__, __height__, c_lr_interface_y_edited_dev, __gamma__);
-        cudaDeviceSynchronize();
         forward_x_dir<<<gridSize_y, blockSize>>>(u_y_dev, u_u_t_y_interface_dev, __Ny__, __Nx__, __height__, dt, __gamma__);
         cudaDeviceSynchronize();
         rotate_and_flip_vertically<<<gridSize_y, blockSize>>>(u_y_dev, u_dev, __Ny__, __Nx__);
         cudaDeviceSynchronize();
+
+        cudaMemset(c_lr_interface_edited_dev, 0, (num_cells + __Ny__) * 2 * sizeof(int));
+        cudaMemset(c_lr_interface_y_edited_dev, 0, (num_cells + __Ny__) * 2 * sizeof(int));
 
         rotate_and_flip_vertically<<<gridSize, blockSize>>>(u_dev_copy, u_y_dev, __Nx__, __Ny__);
         cudaDeviceSynchronize();
         MUSCL_rel_RP_GRP<<<gridSize_y, blockSize>>>(u_y_dev, u_slope_y_dev, __Ny__, __Nx__, __alpha__, __height__, u_lr_y_interface_dev);
         cudaDeviceSynchronize();
         rel_RP_posi_fix<<<gridSize_y, blockSize>>>(u_y_dev, u_slope_y_dev, u_lr_y_interface_dev, __Ny__, __Nx__, u_u_t_y_interface_dev, c_lr_interface_y_edited_dev, __gamma__);
-        cudaDeviceSynchronize();
-        time_deris<<<gridSize_y, blockSize>>>(u_u_t_y_interface_dev, u_lr_y_interface_dev, u_slope_y_dev, __Ny__, __Nx__, __height__, c_lr_interface_y_edited_dev, __gamma__);
         cudaDeviceSynchronize();
         forward_x_dir<<<gridSize_y, blockSize>>>(u_y_dev, u_u_t_y_interface_dev, __Ny__, __Nx__, __height__, dt, __gamma__);
         cudaDeviceSynchronize();
@@ -239,8 +241,6 @@ vector<vector<vec5d>> RGRP_2D_CUDA::solve()
         MUSCL_rel_RP_GRP<<<gridSize, blockSize>>>(u_dev_copy, u_slope_dev, __Nx__, __Ny__, __alpha__, __width__, u_lr_interface_dev);
         cudaDeviceSynchronize();
         rel_RP_posi_fix<<<gridSize, blockSize>>>(u_dev_copy, u_slope_dev, u_lr_interface_dev, __Nx__, __Ny__, u_u_t_interface_dev, c_lr_interface_edited_dev, __gamma__);
-        cudaDeviceSynchronize();
-        time_deris<<<gridSize, blockSize>>>(u_u_t_interface_dev, u_lr_interface_dev, u_slope_dev, __Nx__, __Ny__, __width__, c_lr_interface_edited_dev, __gamma__);
         cudaDeviceSynchronize();
         forward_x_dir<<<gridSize, blockSize>>>(u_dev_copy, u_u_t_interface_dev, __Nx__, __Ny__, __width__, dt, __gamma__);
         cudaDeviceSynchronize();
@@ -252,9 +252,15 @@ vector<vector<vec5d>> RGRP_2D_CUDA::solve()
         __timeStagesNum__++;
         if (__recordAllTimeStages__)
         {
-            cudaMemcpy(__U0__.data(), u_dev, num_cells * sizeof(vec5d), cudaMemcpyDeviceToHost);
-            __allTimeStages__.push_back(flattened2vectorized(__U0__));
+            if (iter == 0 || iter == __gapPerFrame__)
+            {
+                cudaMemcpy(__U0__.data(), u_dev, num_cells * sizeof(vec5d), cudaMemcpyDeviceToHost);
+                writeStagesTo_png(__recordDir__, flattened2vectorized(__U0__), iter_);
+                iter = 0;
+            }
         }
+        iter++;
+        iter_++;
 
         if (__strategy__ == ghostCellStrategy::outflow)
         {
@@ -263,6 +269,10 @@ vector<vector<vec5d>> RGRP_2D_CUDA::solve()
         else if (__strategy__ == ghostCellStrategy::jet)
         {
             set_ghost_cells_jet<<<gridSize, blockSize>>>(u_dev, __Nx__, __Ny__, __width__, __height__, cTime);
+        }
+        else if (__strategy__ == ghostCellStrategy::jet800)
+        {
+            set_ghost_cells_jet800<<<gridSize, blockSize>>>(u_dev, __Nx__, __Ny__, __width__, __height__, cTime);
         }
         else
         {
@@ -310,12 +320,28 @@ void RGRP_2D_CUDA::writeFinalResultTo_txt(const string &dir)
     writeMatrixTo_txt(dir, __U__, __endTime__);
 }
 
-void RGRP_2D_CUDA::writeAllStagesTo_txt(const string &dir)
+void RGRP_2D_CUDA::writeStagesTo_png(const string &dir, const vector<vector<vec5d>> &data, int i)
 {
-    for (auto i = 0; i < __allTimeStages__.size(); i++)
+    int colormap = cv::COLORMAP_VIRIDIS;
+    bool normalize = false;
+    cv::Mat mat(data.size(), data[0].size(), CV_32FC1);
+    for (size_t row = 0; row < data.size(); ++row)
     {
-        writeMatrixTo_txt(dir, __allTimeStages__[i], __cTimes__[i]);
+        for (size_t col = 0; col < data[row].size(); ++col)
+        {
+            mat.at<float>(row, col) = data[row][col](0);
+        }
     }
+    CV_Assert(mat.type() == CV_32FC1 || mat.type() == CV_64FC1);
+
+    cv::Mat display_mat;
+    cv::normalize(mat, display_mat, 0, 255, cv::NORM_MINMAX, CV_8UC1);
+
+    // Apply colormap
+    fs::create_directories(dir);
+    cv::Mat colored;
+    cv::applyColorMap(display_mat, colored, colormap);
+    cv::imwrite(dir + "/" + std::to_string(i) + ".png", colored);
 }
 
 void RGRP_2D_CUDA::clear()

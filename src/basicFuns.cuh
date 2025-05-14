@@ -11,19 +11,19 @@ using thrust::reduce;
 using thrust::swap;
 
 // flux function at a cell interface
-__device__ vec5d flux(vec5d *U, vec5d *U_t, double k)
+__device__ vec5d flux(const vec5d &U, const vec5d &U_t, double k)
 {
-    double rho = U->operator[](0);
-    double pi = U->operator[](1);
-    double u = U->operator[](2);
-    double v = U->operator[](3);
-    double e = U->operator[](4);
+    double rho = U(0);
+    double pi = U(1);
+    double u = U(2);
+    double v = U(3);
+    double e = U(4);
 
-    double rho_t = U_t->operator[](0);
-    double pi_t = U_t->operator[](1);
-    double u_t = U_t->operator[](2);
-    double v_t = U_t->operator[](3);
-    double e_t = U_t->operator[](4);
+    double rho_t = U_t(0);
+    double pi_t = U_t(1);
+    double u_t = U_t(2);
+    double v_t = U_t(3);
+    double e_t = U_t(4);
 
     return {
         rho * u + k / 2.0 * (rho * u_t + u * rho_t),
@@ -79,90 +79,6 @@ __global__ void rel_RP_posi_fix(vec5d *U, vec5d *Us, vec5d *U_lr_interface, int 
 
     if (i < Nx - 1 && j < Ny && i > 1)
     {
-        int idx = j * Nx + i; // cell i (left interface)
-
-        double rho_l = U_lr_interface[2 * idx](0);
-        double rho_r = U_lr_interface[2 * idx + 1](0);
-        double pi_l = U_lr_interface[2 * idx](1);
-        double pi_r = U_lr_interface[2 * idx + 1](1);
-        double u_l = U_lr_interface[2 * idx](2);
-        double u_r = U_lr_interface[2 * idx + 1](2);
-        double v_l = U_lr_interface[2 * idx](3);
-        double v_r = U_lr_interface[2 * idx + 1](3);
-        double e_l = pi_l / rho_l / (gamma - 1.0);
-        double e_r = pi_r / rho_r / (gamma - 1.0);
-        double c_l = sqrt(gamma * pi_l * rho_l);
-        double c_r = sqrt(gamma * pi_r * rho_r);
-
-        double rho = 0.0, pi = 0.0, u = 0.0, v = 0.0, e = 0.0;
-
-        double u_m = (u_l * c_l + u_r * c_r + pi_l - pi_r) / (c_l + c_r);
-        double rho_ml = c_l / (u_m - u_l + c_l / rho_l);
-        double rho_mr = c_r / (u_r - u_m + c_r / rho_r);
-        if (rho_ml <= 0.0 || rho_mr <= 0.0)
-        {
-            double a_l = sqrt(gamma * pi_l / rho_l), a_r = sqrt(gamma * pi_r / rho_r);
-            if (pi_r >= pi_l)
-            {
-                double c_l_ = rho_l * (a_l + (gamma + 1.0) / 2.0 * max(0.0, (pi_r - pi_l) / rho_r / a_r + u_l - u_r));
-                c_l = c_l_;
-                c_r = rho_r * (a_r + (gamma + 1.0) / 2.0 * max(0.0, (pi_l - pi_r) / c_l_ + u_l - u_r));
-            }
-            else
-            {
-                double c_r_ = rho_r * (a_r + (gamma + 1.0) / 2.0 * max(0.0, (pi_l - pi_r) / rho_l / a_l + u_l - u_r));
-                double c_l_ = rho_l * (a_l + (gamma + 1.0) / 2.0 * max(0.0, (pi_r - pi_l) / c_r_ + u_l - u_r));
-                c_l = c_l_;
-                c_r = c_r_;
-            }
-            u_m = (u_l * c_l + u_r * c_r + pi_l - pi_r) / (c_l + c_r);
-            rho_ml = c_l / (u_m - u_l + c_l / rho_l);
-            rho_mr = c_r / (u_r - u_m + c_r / rho_r);
-            c_lr_interface_edited[idx] = 1;
-        }
-        double pi_m = ((u_l - u_r) * c_l * c_r + c_l * pi_r + c_r * pi_l) / (c_l + c_r);
-        double e_ml = e_l + (pi_m - pi_l) * (pi_m + pi_l) / 2.0 / c_l / c_l;
-        double e_mr = e_r + (pi_m - pi_r) * (pi_m + pi_r) / 2.0 / c_r / c_r;
-        if (u_l - c_l / rho_l >= 0.0)
-        {
-            rho = rho_l, pi = pi_l, u = u_l, v = v_l, e = e_l;
-        }
-        else if (u_r + c_r / rho_r <= 0.0)
-        {
-            rho = rho_r, pi = pi_r, u = u_r, v = v_r, e = e_r;
-        }
-        else if (u_m <= 0.0)
-        {
-            pi = pi_m;
-            u = u_m;
-            rho = rho_mr;
-            e = e_mr;
-            v = v_r;
-        }
-        else
-        {
-            pi = pi_m;
-            u = u_m;
-            rho = rho_ml;
-            e = e_ml;
-            v = v_l;
-        }
-
-        u_u_t_interface[2 * idx] = vec5d{rho, pi, u, v, e};
-        U_lr_interface[2 * idx](4) = c_l;
-        U_lr_interface[2 * idx + 1](4) = c_r;
-    }
-}
-
-// compute the time derivatives
-__global__ void time_deris(vec5d *u_u_t_interface, vec5d *U_lr_interface, vec5d *Us, int Nx, int Ny, double width, int *c_lr_interface_edited, double gamma)
-{
-    int j = blockIdx.y * blockDim.y + threadIdx.y; // y-index
-    int i = blockIdx.x * blockDim.x + threadIdx.x; // x-index
-    double h = width / double(Nx);
-
-    if (i < Nx - 1 && j < Ny && i > 1)
-    {
         int idxL = j * Nx + i - 1; // left cell
         int idx = j * Nx + i;      // cell i(left interface)
         int idxR = j * Nx + i + 1; // Right cell
@@ -177,8 +93,8 @@ __global__ void time_deris(vec5d *u_u_t_interface, vec5d *U_lr_interface, vec5d 
         double v_r = U_lr_interface[2 * idx + 1](3);
         double e_l = pi_l / rho_l / (gamma - 1.0);
         double e_r = pi_r / rho_r / (gamma - 1.0);
-        double c_l = U_lr_interface[2 * idx](4);
-        double c_r = U_lr_interface[2 * idx + 1](4);
+        double c_l = 0.0;
+        double c_r = 0.0;
         double rho_lx = Us[idxL](0);
         double rho_rx = Us[idx](0);
         double pi_lx = Us[idxL](1);
@@ -189,22 +105,30 @@ __global__ void time_deris(vec5d *u_u_t_interface, vec5d *U_lr_interface, vec5d 
         double v_rx = Us[idx](3);
         double e_lx = pi_lx / rho_l / (gamma - 1.0) - pi_l * rho_lx / rho_l / rho_l / (gamma - 1.0);
         double e_rx = pi_rx / rho_r / (gamma - 1.0) - pi_r * rho_rx / rho_r / rho_r / (gamma - 1.0);
-        //double c_lx = c_lr_interface_edited[idx] ? (U_lr_interface[2 * idx](4) - U_lr_interface[2 * idx - 1](4)) / h : 0.5 * sqrt(gamma / pi_l / rho_l) * (pi_l * rho_lx + rho_l * pi_lx);
-        //double c_rx = c_lr_interface_edited[idx] ? (U_lr_interface[2 * idx + 2](4) - U_lr_interface[2 * idx + 1](4)) / h : 0.5 * sqrt(gamma / pi_r / rho_r) * (pi_r * rho_rx + rho_r * pi_rx);
-        double c_lx = (U_lr_interface[2 * idx](4) - U_lr_interface[2 * idx - 1](4)) / h;
-        double c_rx = (U_lr_interface[2 * idx + 2](4) - U_lr_interface[2 * idx + 1](4)) / h;
-        // double c_lx = 0.5 * sqrt(gamma / pi_l / rho_l) * (pi_l * rho_lx + rho_l * pi_lx);
-        // double c_rx = 0.5 * sqrt(gamma / pi_r / rho_r) * (pi_r * rho_rx + rho_r * pi_rx);
-
-        double rho = u_u_t_interface[2 * idx](0);
-        double pi = u_u_t_interface[2 * idx](1);
-        double u = u_u_t_interface[2 * idx](2);
-        double v = u_u_t_interface[2 * idx](3);
-        double e = u_u_t_interface[2 * idx](4);
-
+        double c_lx = 0.5 * sqrt(gamma / pi_l / rho_l) * (pi_l * rho_lx + rho_l * pi_lx);
+        double c_rx = 0.5 * sqrt(gamma / pi_r / rho_r) * (pi_r * rho_rx + rho_r * pi_rx);
+        double rho = 0.0, pi = 0.0, u = 0.0, v = 0.0, e = 0.0;
         double rho_t = 0.0, pi_t = 0.0, u_t = 0.0, v_t = 0.0, e_t = 0.0;
+
+        double a_l = sqrt(gamma * pi_l / rho_l), a_r = sqrt(gamma * pi_r / rho_r);
+        double kappa = (gamma + 1.0) / 2.0;
+        if (pi_r >= pi_l)
+        {
+            double c_l_ = rho_l * (a_l + kappa * max(0.0, (pi_r - pi_l) / rho_r / a_r + u_l - u_r));
+            c_l = c_l_;
+            c_r = rho_r * (a_r + kappa * max(0.0, (pi_l - pi_r) / c_l_ + u_l - u_r));
+        }
+        else
+        {
+            double c_r_ = rho_r * (a_r + kappa * max(0.0, (pi_l - pi_r) / rho_l / a_l + u_l - u_r));
+            double c_l_ = rho_l * (a_l + kappa * max(0.0, (pi_r - pi_l) / c_r_ + u_l - u_r));
+            c_l = c_l_;
+            c_r = c_r_;
+        }
+
         if (u_l - c_l / rho_l >= 0.0)
         {
+            rho = rho_l, pi = pi_l, u = u_l, v = v_l, e = e_l;
             rho_t = -rho * u_lx - u * rho_lx;
             u_t = -u * u_lx - pi_lx / rho;
             e_t = -u * e_lx - pi / rho * u_lx;
@@ -213,6 +137,7 @@ __global__ void time_deris(vec5d *u_u_t_interface, vec5d *U_lr_interface, vec5d 
         }
         else if (u_r + c_r / rho_r <= 0.0)
         {
+            rho = rho_r, pi = pi_r, u = u_r, v = v_r, e = e_r;
             rho_t = -rho * u_rx - u * rho_rx;
             u_t = -u * u_rx - pi_rx / rho;
             e_t = -u * e_rx - pi / rho * u_rx;
@@ -221,13 +146,22 @@ __global__ void time_deris(vec5d *u_u_t_interface, vec5d *U_lr_interface, vec5d 
         }
         else
         {
+            double u_m = (u_l * c_l + u_r * c_r + pi_l - pi_r) / (c_l + c_r);
+            double pi_m = ((u_l - u_r) * c_l * c_r + c_l * pi_r + c_r * pi_l) / (c_l + c_r);
             double k_l = -pi_lx - c_l * u_lx + 0.5 * (u - u_l) * c_lx;
             double k_r = -pi_rx + c_r * u_rx - 0.5 * (u - u_r) * c_rx;
             double d_l = -2.0 * c_l * c_l / rho_l * u_lx - 2.0 * c_l / rho_l * pi_lx + c_l / rho_l * (u - u_l) * c_lx;
             double d_r = 2.0 * c_r * c_r / rho_r * u_rx - 2.0 * c_r / rho_r * pi_rx + c_r / rho_r * (u_r - u) * c_rx;
             double Dpi_Dt = (c_r * d_l - c_l * d_r) / 2.0 / (c_l + c_r);
+            pi = pi_m;
+            u = u_m;
             if (u <= 0.0)
             {
+                double rho_mr = c_r / (u_r - u_m + c_r / rho_r);
+                double e_mr = e_r + (pi_m - pi_r) * (pi_m + pi_r) / 2.0 / c_r / c_r;
+                rho = rho_mr;
+                e = e_mr;
+                v = v_r;
                 rho_t = -u * rho * rho * rho / (rho_r * c_r * c_r) * (c_r * c_r / rho_r / rho_r * rho_rx - c_r * u_rx + 1.5 * (u - u_r) * c_rx) + rho * rho * rho / (c_r * c_r * c_r) * (u + c_r / rho) * Dpi_Dt;
                 pi_t = 1.0 / (c_l + c_r) * (c_l * c_r / rho_l * (1 + u * rho / c_r) * k_l - c_l * c_r / rho_r * (1 - u * rho / c_l) * k_r);
                 u_t = 1.0 / (c_l + c_r) * (c_l / rho_l * (1 + u * rho / c_r) * k_l + c_r / rho_r * (1 - u * rho * c_l / c_r / c_r) * k_r);
@@ -237,6 +171,11 @@ __global__ void time_deris(vec5d *u_u_t_interface, vec5d *U_lr_interface, vec5d 
             }
             else
             {
+                double rho_ml = c_l / (u_m - u_l + c_l / rho_l);
+                double e_ml = e_l + (pi_m - pi_l) * (pi_m + pi_l) / 2.0 / c_l / c_l;
+                rho = rho_ml;
+                e = e_ml;
+                v = v_l;
                 rho_t = -u * rho * rho * rho / (rho_l * c_l * c_l) * (c_l * c_l / rho_l / rho_l * rho_lx + c_l * u_lx + 1.5 * (u - u_l) * c_lx) - rho * rho * rho / (c_l * c_l * c_l) * (u - c_l / rho) * Dpi_Dt;
                 pi_t = 1.0 / (c_l + c_r) * (c_l * c_r / rho_l * (1 + u * rho / c_r) * k_l - c_l * c_r / rho_r * (1 - u * rho / c_l) * k_r);
                 u_t = 1.0 / (c_l + c_r) * (c_l / rho_l * (1 + u * rho * c_r / c_l / c_l) * k_l + c_r / rho_r * (1 - u * rho / c_l) * k_r);
@@ -245,7 +184,10 @@ __global__ void time_deris(vec5d *u_u_t_interface, vec5d *U_lr_interface, vec5d 
                 v_t = -u * v_x;
             }
         }
+
+        u_u_t_interface[2 * idx] = vec5d{rho, pi, u, v, e};
         u_u_t_interface[2 * idx + 1] = vec5d(rho_t, pi_t, u_t, v_t, e_t);
+        // u_u_t_interface[2 * idx + 1] = vec5d(0, 0, 0, 0, 0);
     }
 }
 
@@ -293,10 +235,12 @@ __global__ void forward_x_dir(vec5d *U, vec5d *u_u_t_interface, int Nx, int Ny, 
     if (i < Nx - 2 && j < Ny && i > 1)
     {
         int idx = j * Nx + i; // cell i
-        vec5d F_L = flux(&u_u_t_interface[2 * idx], &u_u_t_interface[2 * idx + 1], t);
-        vec5d F_R = flux(&u_u_t_interface[2 * idx + 2], &u_u_t_interface[2 * idx + 3], t);
+        vec5d F_L = flux(u_u_t_interface[2 * idx], u_u_t_interface[2 * idx + 1], t);
+        vec5d F_R = flux(u_u_t_interface[2 * idx + 2], u_u_t_interface[2 * idx + 3], t);
         vec5d U_ = rhoPUVToConserVar(U[idx], gamma);
-        U_ = U_ - (F_R - F_L) * (t / h);
+        auto U_save = U_;
+        double lambda = t / h;
+        U_ = U_ - (F_R - F_L) * lambda;
         U[idx] = conserVarToRhoPUV(U_, gamma);
     }
 }
